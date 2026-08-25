@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import piAutoApprovalExtension from "../index.js";
-import { classifyAction, parseReviewDecision } from "../src/classifier.js";
+import { classifyAction, loadCompleteSimple, parseReviewDecision } from "../src/classifier.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logsDir, normalizeConfig } from "../src/extension-config.js";
 import { evaluateToolCall } from "../src/decision.js";
@@ -98,6 +98,39 @@ async function run(): Promise<void> {
       rationale: "bad",
     });
     assert.throws(() => parseReviewDecision("{}"));
+  });
+
+  await test("classifier loader prefers compat entries and accepts a default export", async () => {
+    const calls: string[] = [];
+    const client = async () => ({ content: [] });
+    const loaded = await loadCompleteSimple(async (specifier) => {
+      calls.push(specifier);
+      if (specifier === "@oh-my-pi/pi-ai/compat") {
+        return { default: { completeSimple: client } };
+      }
+      throw new Error(`unexpected import: ${specifier}`);
+    });
+    assert.equal(loaded, client);
+    assert.deepEqual(calls, ["@oh-my-pi/pi-ai/compat"]);
+  });
+
+  await test("classifier loader falls back from package exports to dist compat", async () => {
+    const calls: string[] = [];
+    const client = async () => ({ content: [] });
+    const loaded = await loadCompleteSimple(
+      async (specifier) => {
+        calls.push(specifier);
+        if (specifier === "file:///pi-ai/dist/compat.js") {
+          return { completeSimple: client };
+        }
+        throw new Error(`not exported: ${specifier}`);
+      },
+      (specifier) => specifier === "@oh-my-pi/pi-ai"
+        ? "file:///pi-ai/dist/index.js"
+        : "file:///other-layout/index.js",
+    );
+    assert.equal(loaded, client);
+    assert.equal(calls.at(-1), "file:///pi-ai/dist/compat.js");
   });
 
   await test("safe command fast path allows only narrow built-ins", () => {

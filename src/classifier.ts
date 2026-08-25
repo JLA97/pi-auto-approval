@@ -9,22 +9,59 @@ export type ClassifierClient = (
   options: Record<string, unknown>,
 ) => Promise<unknown>;
 
-async function loadCompleteSimple(): Promise<ClassifierClient> {
+type ClassifierModuleLoader = (specifier: string) => Promise<unknown>;
+type ClassifierModuleResolver = (specifier: string) => string;
+
+function moduleCompleteSimple(moduleValue: unknown): ClassifierClient | undefined {
+  const mod = toRecord(moduleValue);
+  if (typeof mod.completeSimple === "function") {
+    return mod.completeSimple as ClassifierClient;
+  }
+  const defaultExport = toRecord(mod.default);
+  return typeof defaultExport.completeSimple === "function"
+    ? defaultExport.completeSimple as ClassifierClient
+    : undefined;
+}
+
+export async function loadCompleteSimple(
+  importModule: ClassifierModuleLoader = (specifier) => import(specifier),
+  resolveModule: ClassifierModuleResolver = (specifier) => import.meta.resolve(specifier),
+): Promise<ClassifierClient> {
   const candidates = [
+    "@oh-my-pi/pi-ai/compat",
+    "@earendil-works/pi-ai/compat",
     "@oh-my-pi/pi-ai",
     "@earendil-works/pi-ai",
   ];
   for (const packageName of candidates) {
     try {
-      const mod = await import(packageName);
-      if (typeof mod.completeSimple === "function") {
-        return mod.completeSimple as ClassifierClient;
+      const completeSimple = moduleCompleteSimple(await importModule(packageName));
+      if (completeSimple) {
+        return completeSimple;
       }
     } catch {
-      // try next scope
+      // Try the next exported entry point.
     }
   }
-  throw new Error("Could not load completeSimple from @oh-my-pi/pi-ai or @earendil-works/pi-ai.");
+
+  for (const packageName of ["@oh-my-pi/pi-ai", "@earendil-works/pi-ai"]) {
+    try {
+      const rootUrl = resolveModule(packageName);
+      if (!rootUrl.includes("/dist/index.js")) {
+        continue;
+      }
+      const compatUrl = rootUrl.replace("/dist/index.js", "/dist/compat.js");
+      const completeSimple = moduleCompleteSimple(await importModule(compatUrl));
+      if (completeSimple) {
+        return completeSimple;
+      }
+    } catch {
+      // Try the next package scope before reporting the combined failure.
+    }
+  }
+  throw new Error(
+    "Could not load completeSimple from pi-ai; tried both root and /compat entries for @oh-my-pi/pi-ai and @earendil-works/pi-ai.",
+  );
 }
 
 function extractAssistantText(message: unknown): string | undefined {
