@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import piAutoApprovalExtension from "../index.js";
-import { classifyAction, loadCompleteSimple, parseReviewDecision } from "../src/classifier.js";
+import { classifyAction, extractAssistantText, loadCompleteSimple, parseReviewDecision } from "../src/classifier.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logsDir, normalizeConfig } from "../src/extension-config.js";
 import { evaluateToolCall } from "../src/decision.js";
@@ -131,6 +131,28 @@ async function run(): Promise<void> {
     );
     assert.equal(loaded, client);
     assert.equal(calls.at(-1), "file:///pi-ai/dist/compat.js");
+  });
+
+  await test("extractAssistantText reads thinking, mixed blocks, and top-level string content", () => {
+    assert.equal(extractAssistantText({
+      content: [{ type: "thinking", thinking: '{"outcome":"allow"}' }],
+    }), '{"outcome":"allow"}');
+    assert.equal(extractAssistantText({ content: [] }), undefined);
+    assert.equal(extractAssistantText({
+      content: [
+        { type: "thinking", thinking: '{"outcome":' },
+        { type: "text", text: '"allow"}' },
+      ],
+    }), '{"outcome":"allow"}');
+    assert.equal(extractAssistantText({ content: '{"outcome":"deny"}' }), '{"outcome":"deny"}');
+  });
+
+  await test("extractAssistantText continues from empty content to output and top-level fields", () => {
+    assert.equal(extractAssistantText({
+      content: [],
+      output: [{ type: "thinking", thinking: " " }, { type: "text", content: "from output" }],
+      thinking: " from top level",
+    }), "from output from top level");
   });
 
   await test("safe command fast path allows only narrow built-ins", () => {
@@ -633,11 +655,10 @@ async function run(): Promise<void> {
         }),
       },
     );
-    assert.deepEqual(result, {
-      block: true,
-      reason:
-        "AI auto-approval could not approve this action: Classifier request failed: Command Code API error 403: {\"error\":{\"code\":\"upgrade_required\"}}",
-    });
+    assert.equal("block" in result && result.block, true);
+    assert.match("reason" in result ? result.reason : "", /Command Code API error 403: \{"error":\{"code":"upgrade_required"}}/);
+    assert.match("reason" in result ? result.reason : "", /stopReason/);
+    assert.match("reason" in result ? result.reason : "", /contentBlockTypes/);
   });
 
   await test("classifier still reports no text when response has no errorMessage", async () => {
@@ -648,10 +669,9 @@ async function run(): Promise<void> {
       new SessionApprovalStore(),
       { classifierClient: async () => ({ role: "assistant", content: [] }) },
     );
-    assert.deepEqual(result, {
-      block: true,
-      reason: "AI auto-approval could not approve this action: Classifier returned no text.",
-    });
+    assert.equal("block" in result && result.block, true);
+    assert.match("reason" in result ? result.reason : "", /Classifier returned no text\. Response diagnostics:/);
+    assert.match("reason" in result ? result.reason : "", /topLevelKeys/);
   });
 
   await test("classifier injects ModelRegistry auth into completeSimple options", async () => {

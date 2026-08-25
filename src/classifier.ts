@@ -64,22 +64,81 @@ export async function loadCompleteSimple(
   );
 }
 
-function extractAssistantText(message: unknown): string | undefined {
+function appendTextFragments(value: unknown, fragments: string[]): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  for (const item of value) {
+    const itemRecord = toRecord(item);
+    const fragment = [itemRecord.text, itemRecord.thinking, itemRecord.content]
+      .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+    if (fragment) {
+      fragments.push(fragment);
+    }
+  }
+}
+
+export function extractAssistantText(message: unknown): string | undefined {
   const record = toRecord(message);
-  const content = record.content;
-  if (typeof content === "string") {
-    return content;
+  const fragments: string[] = [];
+
+  if (typeof record.content === "string" && record.content.trim()) {
+    fragments.push(record.content);
+  } else {
+    appendTextFragments(record.content, fragments);
   }
-  if (Array.isArray(content)) {
-    return content.map((item) => {
-      const itemRecord = toRecord(item);
-      return typeof itemRecord.text === "string" ? itemRecord.text : "";
-    }).join("");
+  if (typeof record.output === "string" && record.output.trim()) {
+    fragments.push(record.output);
+  } else {
+    appendTextFragments(record.output, fragments);
   }
-  if (Array.isArray(record.output)) {
-    return record.output.map((item) => toRecord(item).text).filter((text): text is string => typeof text === "string").join("");
+  for (const value of [record.text, record.thinking]) {
+    if (typeof value === "string" && value.trim()) {
+      fragments.push(value);
+    }
   }
-  return undefined;
+
+  return fragments.length > 0 ? fragments.join("") : undefined;
+}
+
+function blockTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => {
+    const type = toRecord(item).type;
+    return typeof type === "string" ? type : typeof item;
+  });
+}
+
+function responseDiagnostics(message: unknown): string {
+  const record = toRecord(message);
+  const diagnostics = {
+    stopReason: record.stopReason,
+    errorMessage: record.errorMessage,
+    api: record.api,
+    provider: record.provider,
+    model: record.model,
+    contentBlockTypes: blockTypes(record.content),
+    outputBlockTypes: blockTypes(record.output),
+    topLevelKeys: Object.keys(record),
+  };
+  const seen = new WeakSet<object>();
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(diagnostics, (_key, value: unknown) => {
+      if (typeof value === "object" && value !== null) {
+        if (seen.has(value)) {
+          return "[Circular]";
+        }
+        seen.add(value);
+      }
+      return value;
+    });
+  } catch {
+    serialized = "{\"diagnostics\":\"unserializable response\"}";
+  }
+  return serialized.length > 600 ? `${serialized.slice(0, 600)}…` : serialized;
 }
 
 export function parseReviewDecision(text: string | undefined): ReviewDecision {
@@ -244,21 +303,13 @@ export async function classifyAction(
 
   const responseText = extractAssistantText(response);
   if (!responseText) {
-    // The provider may return a content-empty assistant message when the
-    // underlying request failed (HTTP 403, auth errors, model setup failures,
-    // etc.). pi-ai's lazyStream surfaces such setup failures as an error event
-    // with `content: []` plus an `errorMessage` field, which collapses to an
-    // empty string here. Surface that upstream errorMessage instead of the
-    // generic "Classifier returned no text." so the deny reason points at the
-    // real cause rather than masking it.
     const responseRecord = toRecord(response);
-    const upstreamError = typeof responseRecord.errorMessage === "string"
-      ? responseRecord.errorMessage.trim()
+    const providerError = typeof responseRecord.errorMessage === "string" && responseRecord.errorMessage.trim()
+      ? ` Provider error: ${responseRecord.errorMessage.trim()}.`
       : "";
-    if (upstreamError) {
-      throw new Error(`Classifier request failed: ${upstreamError}`);
-    }
-    throw new Error("Classifier returned no text.");
+    throw new Error(
+      `Classifier returned no text.${providerError} Response diagnostics: ${responseDiagnostics(response)}`,
+    );
   }
   return parseReviewDecision(responseText);
 }
