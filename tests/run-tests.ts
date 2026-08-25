@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import piAutoApprovalExtension from "../index.js";
-import { classifyAction, extractAssistantText, loadCompleteSimple, parseReviewDecision } from "../src/classifier.js";
+import {
+  classifyAction,
+  extractAssistantText,
+  loadCompleteSimple,
+  parseReviewDecision,
+  resolveClassifierClient,
+} from "../src/classifier.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logsDir, normalizeConfig } from "../src/extension-config.js";
 import { evaluateToolCall } from "../src/decision.js";
@@ -674,184 +680,69 @@ async function run(): Promise<void> {
     assert.match("reason" in result ? result.reason : "", /topLevelKeys/);
   });
 
-  await test("classifier injects ModelRegistry auth into completeSimple options", async () => {
-    let capturedOptions: Record<string, unknown> | undefined;
-    let capturedModel: unknown;
-    const decision = await classifyAction(
-      ctx({
-        modelRegistry: {
-          find: (provider, id) => ({
-            id,
-            api: "openai-completions",
-            provider,
-            baseUrl: "https://my-proxy.example/v1",
-          }),
-          getApiKeyAndHeaders: async () => ({
-            ok: true,
-            apiKey: "test-key-from-models-json",
-            headers: { "X-Custom-Header": "yes" },
-            env: { PROXY_REGION: "eu" },
-          }),
-        },
-      }),
-      config({ classifierModel: "my-proxy/my-model" }),
-      { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
-      async (model, _context, options) => {
-        capturedModel = model;
-        capturedOptions = options as Record<string, unknown>;
+  await test("resolveClassifierClient prefers injected client over modelRegistry", async () => {
+    const injected = async () => ({ content: [] });
+    const registryClient = async () => ({ content: [] });
+    assert.equal(await resolveClassifierClient(ctx({
+      modelRegistry: { completeSimple: registryClient },
+    }), injected), injected);
+  });
+
+  await test("resolveClassifierClient uses bound modelRegistry.completeSimple without dynamic import", async () => {
+    const registry = {
+      marker: "registry",
+      async completeSimple(this: { marker: string }) {
+        assert.equal(this.marker, "registry");
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
-    );
-    assert.equal(decision.outcome, "allow");
-    assert.equal(capturedOptions?.temperature, 0);
-    assert.equal(capturedOptions?.apiKey, "test-key-from-models-json");
-    assert.deepEqual(capturedOptions?.headers, { "X-Custom-Header": "yes" });
-    assert.deepEqual(capturedOptions?.env, { PROXY_REGION: "eu" });
-    assert.equal((capturedModel as { provider?: string }).provider, "my-proxy");
-  });
-
-  await test("classifier surfaces auth resolution failure as deny reason", async () => {
-    let clientCalled = false;
-    await assert.rejects(
-      classifyAction(
-        ctx({
-          modelRegistry: {
-            find: (provider, id) => ({ id, api: "openai-completions", provider }),
-            getApiKeyAndHeaders: async () => ({
-              ok: false,
-              error: 'No API key found for "my-proxy"',
-            }),
-          },
-        }),
-        config({ classifierModel: "my-proxy/my-model" }),
-        { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
-        async () => {
-          clientCalled = true;
-          return { content: [] };
-        },
-      ),
-      /Could not resolve classifier model auth: No API key found for "my-proxy"/,
-    );
-    assert.equal(clientCalled, false, "completeSimple must not be called when auth fails to resolve");
-  });
-
-  await test("classifier stays backward compatible when registry lacks getApiKeyAndHeaders", async () => {
-    // Older pi runtimes do not expose ModelRegistry.getApiKeyAndHeaders on the
-    // extension context. The classifier must fall back to the original behavior
-    // (call completeSimple with temperature only) rather than throwing or
-    // injecting undefined auth fields.
-    let capturedOptions: Record<string, unknown> | undefined;
-    const decision = await classifyAction(
-      ctx({
-        // No modelRegistry at all on this context.
-      }),
-      config({}),
-      { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
-      async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
-        return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
-      },
-    );
-    assert.equal(decision.outcome, "allow");
-    assert.equal(capturedOptions?.temperature, 0);
-    assert.equal("apiKey" in (capturedOptions ?? {}), false, "apiKey must not be present when registry lacks getApiKeyAndHeaders");
-    assert.equal("headers" in (capturedOptions ?? {}), false, "headers must not be present when registry lacks getApiKeyAndHeaders");
-    assert.equal("env" in (capturedOptions ?? {}), false, "env must not be present when registry lacks getApiKeyAndHeaders");
-  });
-
-  await test("classifier tolerates auth resolution returning empty fields", async () => {
-    // A provider that is genuinely anonymous (e.g. a local proxy needing no
-    // key) resolves with ok:true and no apiKey/headers/env. The classifier
-    // must proceed to call completeSimple and must not inject auth fields.
-    let capturedOptions: Record<string, unknown> | undefined;
-    const decision = await classifyAction(
-      ctx({
-        modelRegistry: {
-          find: (provider, id) => ({ id, api: "openai-completions", provider, baseUrl: "http://localhost:8080/v1" }),
-          getApiKeyAndHeaders: async () => ({ ok: true }),
-        },
-      }),
-      config({ classifierModel: "my-proxy/my-model" }),
-      { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
-      async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
-        return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
-      },
-    );
-    assert.equal(decision.outcome, "allow");
-    assert.equal(capturedOptions?.temperature, 0);
-    assert.equal("apiKey" in (capturedOptions ?? {}), false);
-    assert.equal("headers" in (capturedOptions ?? {}), false);
-    assert.equal("env" in (capturedOptions ?? {}), false);
-  });
-
-  await test("auto mode end-to-end allow with injected custom provider auth", async () => {
-    // End-to-end: evaluateToolCall in auto mode must allow a classifier "allow"
-    // when the custom provider's models.json key is injected via
-    // getApiKeyAndHeaders. Verifies the auth fix is wired through the full
-    // decision pipeline, not just classifyAction in isolation.
-    let capturedApiKey: unknown;
-    const result = await evaluateToolCall(
-      { toolName: "bash", input: { command: "npm install" } },
-      ctx({
-        modelRegistry: {
-          find: (provider, id) => ({ id, api: "openai-completions", provider, baseUrl: "https://my-proxy.example/v1" }),
-          getApiKeyAndHeaders: async () => ({
-            ok: true,
-            apiKey: "proxy-key-from-models-json",
-            headers: { "X-Proxy": "1" },
-          }),
-        },
-      }),
-      config({ mode: "auto", classifierModel: "my-proxy/my-model" }),
-      new SessionApprovalStore(),
-      {
-        classifierClient: async (_model, _context, options) => {
-          capturedApiKey = (options as Record<string, unknown> | undefined)?.apiKey;
-          return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
-        },
-      },
-    );
-    assert.deepEqual(result, {});
-    assert.equal(capturedApiKey, "proxy-key-from-models-json");
-  });
-
-  await test("fallback mode routes auth resolution failure to human approval", async () => {
-    // When getApiKeyAndHeaders returns ok:false, fallback + UI must defer to
-    // human approval (not deny opaquely), mirroring how other classifier
-    // failures are handled in fallback mode. Verifies the auth fix does not
-    // regress the fallback-to-human safety net.
-    const store = new SessionApprovalStore();
-    const result = await evaluateToolCall(
-      { toolName: "bash", input: { command: "rm -rf /" } },
-      ctx({
-        hasUI: true,
-        ui: {
-          select: async () => "Deny",
-        },
-        modelRegistry: {
-          find: (provider, id) => ({ id, api: "openai-completions", provider }),
-          getApiKeyAndHeaders: async () => ({
-            ok: false,
-            error: 'No API key found for "my-proxy"',
-          }),
-        },
-      }),
-      config({ mode: "fallback", classifierModel: "my-proxy/my-model" }),
-      store,
-      {
-        classifierClient: async () => {
-          throw new Error("completeSimple must not be called when auth fails to resolve");
-        },
-      },
-    );
-    // Human denied: reason reflects the classifier failure (failureReason)
-    // without the auto-mode failureDenyReason prefix, same as other fallback
-    // human-deny outcomes.
-    assert.deepEqual(result, {
-      block: true,
-      reason: 'Could not resolve classifier model auth: No API key found for "my-proxy"',
+    };
+    const client = await resolveClassifierClient(ctx({ modelRegistry: registry }));
+    assert.deepEqual(await client({}, {}, {}), {
+      content: [{ type: "text", text: '{"outcome":"allow"}' }],
     });
+  });
+
+  await test("resolveClassifierClient falls back to bound modelRegistry.complete", async () => {
+    const registry = {
+      marker: "registry",
+      async complete(this: { marker: string }) {
+        assert.equal(this.marker, "registry");
+        return { content: [{ type: "text", text: '{"outcome":"deny"}' }] };
+      },
+    };
+    const client = await resolveClassifierClient(ctx({ modelRegistry: registry }));
+    assert.deepEqual(await client({}, {}, {}), {
+      content: [{ type: "text", text: '{"outcome":"deny"}' }],
+    });
+  });
+
+  await test("resolveClassifierClient uses bare pi-ai only as the final fallback", async () => {
+    await assert.rejects(
+      resolveClassifierClient(ctx({ modelRegistry: {} })),
+      /tried both root and \/compat entries/,
+    );
+  });
+
+  await test("classifyAction uses authenticated modelRegistry completion", async () => {
+    let registryThis: unknown;
+    const registry = {
+      async completeSimple(this: unknown, model: unknown, _context: unknown, options: Record<string, unknown>) {
+        registryThis = this;
+        assert.deepEqual(model, { provider: "oauth-provider", id: "review-model" });
+        assert.equal(options.temperature, 0);
+        return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
+      },
+    };
+    const decision = await classifyAction(
+      ctx({
+        model: { provider: "oauth-provider", id: "review-model" },
+        modelRegistry: registry,
+      }),
+      config(),
+      { toolName: "bash", input: { command: "npm install" }, cwd: "/tmp", actionSummary: "bash: npm install", actionHash: "x" },
+    );
+    assert.equal(decision.outcome, "allow");
+    assert.equal(registryThis, registry);
   });
 
   await test("audit logging does not throw", async () => {
