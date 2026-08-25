@@ -61,16 +61,21 @@ async function handleHumanFallback(
       outcome: "allow",
       classifierDecision: auditBase.classifierDecision,
       humanDecision: human.persistence,
+      reason: auditBase.failureReason,
       durationMs: Date.now() - auditBase.started,
     });
     return {};
   }
 
   store.recordDenial();
-  const reason = human.reason
-    ?? auditBase.classifierDecision?.rationale
-    ?? auditBase.failureReason
-    ?? "Manual approval was rejected.";
+  const reason = [
+    human.reason,
+    auditBase.classifierDecision?.rationale,
+    auditBase.failureReason,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim())
+    .join(" | ") || "Manual approval was rejected.";
   await writeAudit(config, {
     event: "decision",
     route: "human",

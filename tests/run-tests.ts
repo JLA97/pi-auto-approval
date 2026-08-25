@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import piAutoApprovalExtension from "../index.js";
@@ -743,6 +743,52 @@ async function run(): Promise<void> {
     );
     assert.equal(decision.outcome, "allow");
     assert.equal(registryThis, registry);
+  });
+
+  await test("human fallback audit preserves classifier failure on approval and timeout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-audit-reason-"));
+    const previousLogsDir = process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+    process.env.PI_AUTO_APPROVAL_LOGS_DIR = dir;
+    try {
+      const classifierFailure = "No API key for provider: oauth-provider";
+      const approved = await evaluateToolCall(
+        { toolName: "bash", input: { command: "npm install" } },
+        ctx({ hasUI: true, ui: { select: async () => "Allow Once" } }),
+        config({ mode: "fallback", audit: true }),
+        new SessionApprovalStore(),
+        { classifierClient: async () => { throw new Error(classifierFailure); } },
+      );
+      assert.deepEqual(approved, {});
+
+      const timedOut = await evaluateToolCall(
+        { toolName: "bash", input: { command: "npm publish" } },
+        ctx({ hasUI: true, ui: { select: async () => undefined } }),
+        config({ mode: "fallback", audit: true }),
+        new SessionApprovalStore(),
+        { classifierClient: async () => { throw new Error(classifierFailure); } },
+      );
+      assert.deepEqual(timedOut, {
+        block: true,
+        reason: `Manual approval timed out. | ${classifierFailure}`,
+      });
+
+      const records = readFileSync(join(dir, "pi-auto-approval.jsonl"), "utf-8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { outcome: string; reason?: string });
+      assert.equal(records.find((record) => record.outcome === "allow")?.reason, classifierFailure);
+      assert.equal(
+        records.find((record) => record.outcome === "deny")?.reason,
+        `Manual approval timed out. | ${classifierFailure}`,
+      );
+    } finally {
+      if (previousLogsDir === undefined) {
+        delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+      } else {
+        process.env.PI_AUTO_APPROVAL_LOGS_DIR = previousLogsDir;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   await test("audit logging does not throw", async () => {
