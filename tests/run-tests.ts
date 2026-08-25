@@ -745,6 +745,72 @@ async function run(): Promise<void> {
     assert.equal(registryThis, registry);
   });
 
+  await test("classifyAction omits temperature for codex models", async () => {
+    const optionLog: Record<string, unknown>[] = [];
+    const decision = await classifyAction(
+      ctx({
+        model: { provider: "openai-codex", id: "gpt-5.6-sol", api: "openai-codex-responses" },
+        modelRegistry: {
+          completeSimple: async (_model: unknown, _context: unknown, options: Record<string, unknown>) => {
+            optionLog.push(options);
+            return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
+          },
+        },
+      }),
+      config(),
+      { toolName: "bash", input: { command: "npm install" }, cwd: "/tmp", actionSummary: "bash: npm install", actionHash: "x" },
+    );
+    assert.equal(decision.outcome, "allow");
+    assert.equal(optionLog.length, 1);
+    assert.equal("temperature" in optionLog[0], false);
+  });
+
+  await test("classifyAction omits temperature when model declares supportsTemperature false", async () => {
+    const optionLog: Record<string, unknown>[] = [];
+    await classifyAction(
+      ctx({
+        model: { provider: "anthropic", id: "claude-opus-4-7", supportsTemperature: false },
+        modelRegistry: {
+          completeSimple: async (_model: unknown, _context: unknown, options: Record<string, unknown>) => {
+            optionLog.push(options);
+            return { content: [{ type: "text", text: '{"outcome":"deny"}' }] };
+          },
+        },
+      }),
+      config(),
+      { toolName: "bash", input: { command: "npm install" }, cwd: "/tmp", actionSummary: "bash: npm install", actionHash: "x" },
+    );
+    assert.equal(optionLog.length, 1);
+    assert.equal("temperature" in optionLog[0], false);
+  });
+
+  await test("classifyAction retries without temperature on unsupported-parameter errors", async () => {
+    const optionLog: Record<string, unknown>[] = [];
+    const decision = await classifyAction(
+      ctx({
+        model: { provider: "openai", id: "gpt-5.7" },
+        modelRegistry: {
+          completeSimple: async (_model: unknown, _context: unknown, options: Record<string, unknown>) => {
+            optionLog.push(options);
+            if ("temperature" in options) {
+              return {
+                stopReason: "error",
+                errorMessage: "Codex error: Unsupported parameter: temperature.",
+              };
+            }
+            return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
+          },
+        },
+      }),
+      config(),
+      { toolName: "bash", input: { command: "npm install" }, cwd: "/tmp", actionSummary: "bash: npm install", actionHash: "x" },
+    );
+    assert.equal(decision.outcome, "allow");
+    assert.equal(optionLog.length, 2);
+    assert.equal(optionLog[0].temperature, 0);
+    assert.equal("temperature" in optionLog[1], false);
+  });
+
   await test("human fallback audit preserves classifier failure on approval and timeout", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-audit-reason-"));
     const previousLogsDir = process.env.PI_AUTO_APPROVAL_LOGS_DIR;

@@ -243,6 +243,26 @@ function resolveClassifierModel(ctx: ExtensionContextLike, config: AutoReviewCon
     : { ...currentModelRecord, id };
 }
 
+export function modelAcceptsTemperature(model: unknown): boolean {
+  const record = toRecord(model);
+  if (record.supportsTemperature === false) {
+    return false;
+  }
+  const compat = toRecord(record.compat);
+  if (compat.supportsTemperature === false) {
+    return false;
+  }
+  // Codex endpoints reject the temperature request parameter outright, and the
+  // openai-codex-responses API layer forwards it verbatim, so it must be omitted.
+  for (const key of ["api", "provider"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.toLowerCase().includes("codex")) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function classifyAction(
   ctx: ExtensionContextLike,
   config: AutoReviewConfig,
@@ -255,21 +275,34 @@ export async function classifyAction(
     throw new Error("No active model is available for auto approval.");
   }
 
-  const response = await withTimeout(
-    completeSimple(model, {
-      systemPrompt: buildSystemPrompt(config),
-      messages: [{
-        role: "user",
-        content: buildProjectedContext(ctx, subject),
-        timestamp: Date.now(),
-      }],
-    }, {
-      temperature: 0,
-    }),
-    config.classifierTimeoutSeconds * 1000,
-  );
+  const requestContext = {
+    systemPrompt: buildSystemPrompt(config),
+    messages: [{
+      role: "user",
+      content: buildProjectedContext(ctx, subject),
+      timestamp: Date.now(),
+    }],
+  };
+  const runClassifier = (options: Record<string, unknown>) =>
+    withTimeout(
+      completeSimple(model, requestContext, options),
+      config.classifierTimeoutSeconds * 1000,
+    );
 
-  const responseText = extractAssistantText(response);
+  // Deterministic classification where the endpoint accepts temperature; some
+  // backends (Codex, certain reasoning models) reject the parameter entirely.
+  const sendTemperature = modelAcceptsTemperature(model);
+  let response = await runClassifier(sendTemperature ? { temperature: 0 } : {});
+
+  let responseText = extractAssistantText(response);
+  if (!responseText && sendTemperature) {
+    const errorMessage = toRecord(response).errorMessage;
+    if (typeof errorMessage === "string" && /temperature/i.test(errorMessage)) {
+      response = await runClassifier({});
+      responseText = extractAssistantText(response);
+    }
+  }
+
   if (!responseText) {
     const responseRecord = toRecord(response);
     const providerError = typeof responseRecord.errorMessage === "string" && responseRecord.errorMessage.trim()
