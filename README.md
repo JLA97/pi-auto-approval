@@ -6,24 +6,42 @@ pi-auto-approval is an automatic approval extension for Pi, inspired by Claude C
 
 It uses an AI classifier to approve low-risk tool calls. Risky, denied, failed, or uncertain actions fall back to human approval or are blocked by the selected mode.
 
+> [!IMPORTANT]
+> This repository is a fork of [`Europa2061/pi-auto-approval`](https://github.com/Europa2061/pi-auto-approval). The `npm:pi-auto-approval` package points to the upstream project and does **not** include the fork-specific classifier compatibility fixes documented below. Install this fork from GitHub if you need those fixes.
+
+## Changes in this fork
+
+Compared with the upstream extension, this fork:
+
+- loads `completeSimple` across the root and `/compat` entry points of both supported pi-ai package scopes, including default exports and a resolved `dist/compat.js` fallback;
+- extracts classifier text robustly from content, output, text, and thinking fields, and reports bounded response diagnostics instead of masking empty provider responses;
+- routes classifier calls through `ctx.modelRegistry.completeSimple` or `complete` when available, preserving Pi's configured authentication and provider behavior;
+- omits `temperature` for Codex and models that declare it unsupported, and retries once without it when a provider rejects the parameter;
+- preserves classifier failure reasons in human-fallback audit records and denial messages;
+- adds regression coverage for compatibility loading, authenticated classifier calls, response extraction, diagnostics, temperature handling, and audit reasons.
+
 ## Installation
 
-Install from npm (recommended):
+> **Security:** Pi packages run with full system access. Review [this fork's source](https://github.com/JLA97/pi-auto-approval) before installing.
+
+This fork is currently distributed through GitHub rather than the upstream npm package.
+
+**Global installation:**
 
 ```bash
-pi install npm:pi-auto-approval
+pi install git:github.com/JLA97/pi-auto-approval
 ```
 
-Install a pinned release:
+**Project-local installation** (writes to `.pi/settings.json`):
 
 ```bash
-pi install npm:pi-auto-approval@0.1.0
+pi install -l git:github.com/JLA97/pi-auto-approval
 ```
 
-Install only for the current project:
+**Ephemeral use** (current session only):
 
 ```bash
-pi install -l npm:pi-auto-approval
+pi -e git:github.com/JLA97/pi-auto-approval
 ```
 
 Reload Pi and enable the recommended mode:
@@ -33,32 +51,33 @@ Reload Pi and enable the recommended mode:
 /auto-approval fallback
 ```
 
-### Migrate from a GitHub installation
+### Migrating from the upstream extension
 
-Pi treats GitHub and npm sources as different packages. Remove the GitHub installation before using the npm package so the extension is not loaded twice.
+Pi treats npm and Git sources as different packages. Remove the upstream source before installing this fork so the extension is not loaded twice.
 
 Before removing it, run `/auto-approval status` and back up the displayed `config.jsonc` if you want to keep custom settings. The default config path is inside the installed package and does not move automatically between package sources.
 
-For a user installation:
-
 ```bash
-pi remove https://github.com/Europa2061/pi-auto-approval
-pi install npm:pi-auto-approval
+# If upstream was installed from npm:
+pi remove npm:pi-auto-approval
+
+# Or, if upstream was installed from its Git repository:
+pi remove git:github.com/Europa2061/pi-auto-approval
+
+# Then install this fork:
+pi install git:github.com/JLA97/pi-auto-approval
 ```
 
-For a project-local installation:
+Use the same `-l` flag on `remove` and `install` when migrating a project-local installation. Start Pi again, restore the config to the new path shown by `/auto-approval status` if needed, then run `/reload`.
+
+### Updating this fork
 
 ```bash
-pi remove -l https://github.com/Europa2061/pi-auto-approval
-pi install -l npm:pi-auto-approval
-```
+# Update this package only:
+pi update git:github.com/JLA97/pi-auto-approval
 
-Start Pi again, restore the config to the new path shown by `/auto-approval status` if needed, then run `/reload`. The unpinned remove command also matches an installation pinned to a Git tag such as `@v0.1.0`.
-
-GitHub installation remains available as an alternative:
-
-```bash
-pi install https://github.com/Europa2061/pi-auto-approval
+# Or update all installed Pi packages:
+pi update --extensions
 ```
 
 ## Commands

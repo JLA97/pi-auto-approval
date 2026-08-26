@@ -6,24 +6,42 @@ pi-auto-approval 是一个为 Pi 开发的自动审批扩展，参考了 Claude 
 
 当 Pi agent 请求执行工具调用时，扩展会用 AI 分类器判断能否安全放行。低风险动作会自动批准；高风险、拒绝、失败或不确定的动作，会按当前模式回退到人工审批或直接阻止。
 
+> [!IMPORTANT]
+> 本仓库 fork 自 [`Europa2061/pi-auto-approval`](https://github.com/Europa2061/pi-auto-approval)。`npm:pi-auto-approval` 指向上游项目，**不包含**下方列出的分类器兼容性修复。需要这些修复时，请从 GitHub 安装本 fork。
+
+## 本 fork 的变更
+
+与上游版本相比，本 fork：
+
+- 可从两个受支持 pi-ai 包作用域的根入口和 `/compat` 入口加载 `completeSimple`，兼容 default export，并提供解析后 `dist/compat.js` 的兜底路径；
+- 可从 content、output、text 和 thinking 字段稳健提取分类器文本，并在响应为空时输出有长度限制的诊断信息，不再掩盖 provider 错误；
+- 优先通过 `ctx.modelRegistry.completeSimple` 或 `complete` 调用分类器，沿用 Pi 已配置的认证信息和 provider 行为；
+- 对 Codex 及声明不支持温度的模型省略 `temperature`，当 provider 拒绝该参数时自动移除并重试一次；
+- 在人工兜底的审计记录和拒绝消息中保留分类器失败原因；
+- 增加兼容入口、认证调用、响应提取、诊断信息、温度处理和审计原因的回归测试。
+
 ## 安装
 
-推荐从 npm 安装：
+> **安全提示：** Pi package 拥有完整系统权限。安装前请审阅[本 fork 的源码](https://github.com/JLA97/pi-auto-approval)。
+
+本 fork 当前通过 GitHub 分发，而不是上游 npm 包。
+
+**用户级安装：**
 
 ```bash
-pi install npm:pi-auto-approval
+pi install git:github.com/JLA97/pi-auto-approval
 ```
 
-安装固定版本：
+**当前项目安装**（写入 `.pi/settings.json`）：
 
 ```bash
-pi install npm:pi-auto-approval@0.1.0
+pi install -l git:github.com/JLA97/pi-auto-approval
 ```
 
-只安装到当前项目：
+**临时使用**（仅当前会话）：
 
 ```bash
-pi install -l npm:pi-auto-approval
+pi -e git:github.com/JLA97/pi-auto-approval
 ```
 
 重新加载 Pi 并启用推荐模式：
@@ -33,32 +51,33 @@ pi install -l npm:pi-auto-approval
 /auto-approval fallback
 ```
 
-### 从 GitHub 安装迁移到 npm
+### 从上游扩展迁移
 
-Pi 会把 GitHub 和 npm 来源视为两个不同的包。使用 npm 包前，请先移除 GitHub 安装，避免扩展被重复加载。
+Pi 会把 npm 和 Git 来源视为两个不同的包。安装本 fork 前请先移除上游来源，避免扩展被重复加载。
 
 如果需要保留自定义配置，请先运行 `/auto-approval status`，备份其中显示的 `config.jsonc`。默认配置文件位于扩展安装目录内，更换安装来源时不会自动迁移。
 
-用户级安装迁移：
-
 ```bash
-pi remove https://github.com/Europa2061/pi-auto-approval
-pi install npm:pi-auto-approval
+# 如果上游版本从 npm 安装：
+pi remove npm:pi-auto-approval
+
+# 或者，如果上游版本从 Git 仓库安装：
+pi remove git:github.com/Europa2061/pi-auto-approval
+
+# 然后安装本 fork：
+pi install git:github.com/JLA97/pi-auto-approval
 ```
 
-当前项目安装迁移：
+迁移项目级安装时，在 `remove` 和 `install` 命令中使用相同的 `-l` 参数。重新启动 Pi；需要时，将配置恢复到 `/auto-approval status` 显示的新路径，然后运行 `/reload`。
+
+### 更新本 fork
 
 ```bash
-pi remove -l https://github.com/Europa2061/pi-auto-approval
-pi install -l npm:pi-auto-approval
-```
+# 只更新本扩展：
+pi update git:github.com/JLA97/pi-auto-approval
 
-重新启动 Pi。需要时，将备份配置恢复到 `/auto-approval status` 显示的新路径，然后运行 `/reload`。即使原来安装的是 `@v0.1.0` 这类固定 Git 标签，也可以使用上面不带标签的移除命令。
-
-仍然可以选择从 GitHub 安装：
-
-```bash
-pi install https://github.com/Europa2061/pi-auto-approval
+# 或更新所有已安装的 Pi package：
+pi update --extensions
 ```
 
 ## 命令
