@@ -92,6 +92,10 @@ pi update --extensions
 | `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
 | `/auto-approval model` | 打开审批分类器模型选择器。 |
 | `/auto-approval model current` | 使用当前 Pi 会话模型作为审批分类器模型。 |
+| `/auto-approval jev` | 显示 Jev 集成模式与阈值。 |
+| `/auto-approval jev off` | 关闭 Jev；仅使用 chat 分类器（与原有行为完全一致）。 |
+| `/auto-approval jev cascade` | Jev 先行判断高置信区间；不确定的调用升级到 chat 分类器。 |
+| `/auto-approval jev shadow` | Jev 并行运行，仅写入审计日志，用于准确率测试。 |
 
 ## 截图
 
@@ -199,3 +203,35 @@ npm run smoke:pi
 ```
 
 该脚本会在临时配置和日志目录中运行，验证 `/auto-approval fallback`、`/auto-approval auto`、安全 bash 命令放行、可疑 bash 命令的人工兜底或拒绝，以及 JSONL 审计日志内容。
+
+## Jev 集成（TypeSafe System One）
+
+本 fork 增加了可选的 Jev 集成。Jev（[TypeSafe](https://typesafe.ai)）是一个 System One 决策模型：它读取与 chat 分类器完全相同的上下文投影，用校准概率回答结构化问题（P(allow)、风险等级、用户授权程度），单次约 0.3–1 秒、约 $0.00003。
+
+三种模式，随时用 `/auto-approval jev off|cascade|shadow` 或 `config.jsonc` 的 `jev` 块切换：
+
+| 模式 | 行为 |
+| --- | --- |
+| `off`（默认） | Jev 关闭。行为与本 fork 改动前完全一致。 |
+| `cascade` | chat 分类器运行前先问一次 Jev（三个问题批量并行）。P(allow) ≥ `allowThreshold`（0.85）直接放行；P(allow) ≤ `denyThreshold`（0.15）视为高置信拒绝（fallback 模式下仍转人工审批）；不确定区间升级到 chat 分类器。Jev 失败、超时或无 API key 时回落到 chat 分类器——cascade 模式永远不会比 `off` 更严格。 |
+| `shadow` | 决策流程与 `off` 完全相同，Jev 并行运行并把完整判断并排记录到审计日志。适合准确率测试：离线对比 `jevDecision.allowProbability` 与 `classifierDecision.outcome`，零风险。 |
+
+### 配置
+
+```jsonc
+"jev": {
+  "mode": "off",                                  // off | cascade | shadow
+  "baseUrl": "https://api.typesafe.ai",           // 或 https://openrouter.ai/api
+  "apiKey": "",                                    // 留空 = 读 TYPESAFE_API_KEY（OpenRouter 则读 OPENROUTER_API_KEY）
+  "model": "jev-latest",                          // OpenRouter 端点自动加 typesafe/ 前缀
+  "timeoutSeconds": 5,
+  "allowThreshold": 0.85,
+  "denyThreshold": 0.15
+}
+```
+
+`baseUrl` 通常无需配置——默认指向 TypeSafe 官方 API。改为 `https://openrouter.ai/api` 可用 OpenRouter key 计费（System One 请求格式完全兼容）；网络无法直连 `api.typesafe.ai` 时也可以指向自建反代。
+
+### 审计日志
+
+每条分类器路径的决策可携带三个附加字段：`jevDecision`（概率、评分、置信度、token 用量）、`jevEscalated`（cascade 升级到 chat 分类器）、`jevError`（Jev 调用失败）。cascade 决策使用路由 `jev`（直接放行）和 `jev_deny`（高置信拒绝）；shadow 决策保持原路由。这就是准确率分析的数据集。

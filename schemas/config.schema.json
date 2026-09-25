@@ -14,6 +14,20 @@
     "allow": { "type": "array", "items": { "type": "string" }, "default": [] },
     "deny": { "type": "array", "items": { "type": "string" }, "default": [] },
     "environment": { "type": "string", "default": "" },
-    "audit": { "type": "boolean", "default": true }
+    "audit": { "type": "boolean", "default": true },
+    "jev": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["off", "cascade", "shadow"], "default": "off", "description": "off keeps the chat classifier only; cascade lets Jev decide confident bands; shadow records Jev judgments without influencing decisions." },
+        "baseUrl": { "type": "string", "default": "https://api.typesafe.ai", "description": "System One endpoint base. Use https://openrouter.ai/api for OpenRouter billing." },
+        "apiKey": { "type": "string", "default": "", "description": "Explicit API key. Empty reads TYPESAFE_API_KEY (or OPENROUTER_API_KEY for OpenRouter base URLs)." },
+        "model": { "type": "string", "default": "jev-latest" },
+        "timeoutSeconds": { "type": "number", "exclusiveMinimum": 0, "default": 5 },
+        "allowThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85 },
+        "denyThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.15 }
+      },
+      "default": {}
+    }
   }
 }

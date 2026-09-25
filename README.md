@@ -92,6 +92,10 @@ pi update --extensions
 | `/auto-approval auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
 | `/auto-approval model` | Open the model selector for the approval classifier model. |
 | `/auto-approval model current` | Use the active Pi session model for approval classification. |
+| `/auto-approval jev` | Show the Jev integration mode and thresholds. |
+| `/auto-approval jev off` | Disable Jev; decisions use the chat classifier only (original behavior). |
+| `/auto-approval jev cascade` | Jev decides confident bands; uncertain calls escalate to the chat classifier. |
+| `/auto-approval jev shadow` | Jev runs in parallel and is only recorded in the audit log for accuracy testing. |
 
 ## Screenshot
 
@@ -199,3 +203,35 @@ npm run smoke:pi
 ```
 
 The smoke script runs in temporary config and log directories. It verifies `/auto-approval fallback`, `/auto-approval auto`, safe bash command allow, suspicious bash command human fallback or denial, and JSONL audit log contents.
+
+## Jev Integration (TypeSafe System One)
+
+This fork adds an optional Jev integration. Jev ([TypeSafe](https://typesafe.ai)) is a System One decision model: it reads the same projected context the chat classifier sees and answers typed questions with calibrated probabilities (P(allow), risk level, user authorization) in ~0.3–1s at roughly $0.00003 per call.
+
+Three modes, switchable at any time with `/auto-approval jev off|cascade|shadow` or via the `jev` block in `config.jsonc`:
+
+| Mode | Behavior |
+| --- | --- |
+| `off` (default) | Jev is disabled. Behavior is identical to this fork before the change. |
+| `cascade` | Before the chat classifier runs, Jev is asked one batched request. P(allow) ≥ `allowThreshold` (0.85) is approved directly; P(allow) ≤ `denyThreshold` (0.15) is treated as a high-confidence deny (human fallback in fallback mode); the uncertain band escalates to the chat classifier. If Jev fails, times out, or has no API key, the decision falls back to the chat classifier — cascade is never stricter than `off`. |
+| `shadow` | Decisions are made exactly as in `off`, while Jev runs in parallel and its full judgment is recorded next to every chat decision in the audit log. Ideal for accuracy testing: compare `jevDecision.allowProbability` against `classifierDecision.outcome` offline with zero risk. |
+
+### Configuration
+
+```jsonc
+"jev": {
+  "mode": "off",                                  // off | cascade | shadow
+  "baseUrl": "https://api.typesafe.ai",           // or https://openrouter.ai/api
+  "apiKey": "",                                    // empty = TYPESAFE_API_KEY (or OPENROUTER_API_KEY)
+  "model": "jev-latest",                          // typesafe/ prefix added automatically on OpenRouter
+  "timeoutSeconds": 5,
+  "allowThreshold": 0.85,
+  "denyThreshold": 0.15
+}
+```
+
+`baseUrl` does not normally need configuring — the default points at the TypeSafe API. Set it to `https://openrouter.ai/api` to bill through an OpenRouter key instead (the System One request format is identical; OpenRouter docs confirm compatibility), or to a self-hosted proxy if `api.typesafe.ai` is not reachable from your network.
+
+### Audit log
+
+Every classifier-path decision can carry three extra fields: `jevDecision` (probabilities, scores, confidence, token usage), `jevEscalated` (cascade escalated to the chat classifier), and `jevError` (Jev call failed). Cascade decisions use routes `jev` (direct allow) and `jev_deny` (high-confidence deny); shadow decisions keep the original routes. This is the dataset for accuracy analysis.

@@ -1,10 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AutoReviewConfig, AutoReviewMode } from "./types.js";
+import type { AutoReviewConfig, AutoReviewMode, JevConfig, JevMode } from "./types.js";
+import { DEFAULT_JEV_BASE_URL } from "./jev-client.js";
 import { toRecord } from "./common.js";
 
 export const EXTENSION_ID = "pi-auto-approval";
+
+export const DEFAULT_JEV_CONFIG: JevConfig = {
+  mode: "off",
+  baseUrl: DEFAULT_JEV_BASE_URL,
+  apiKey: "",
+  model: "jev-latest",
+  timeoutSeconds: 5,
+  allowThreshold: 0.85,
+  denyThreshold: 0.15,
+};
 
 export const DEFAULT_CONFIG: AutoReviewConfig = {
   enabled: false,
@@ -18,6 +29,7 @@ export const DEFAULT_CONFIG: AutoReviewConfig = {
   deny: [],
   environment: "",
   audit: true,
+  jev: { ...DEFAULT_JEV_CONFIG },
 };
 
 export function extensionRoot(moduleUrl = import.meta.url): string {
@@ -58,6 +70,36 @@ function normalizeMode(value: unknown): AutoReviewMode {
   return value === "auto" ? "auto" : "fallback";
 }
 
+function normalizeJevMode(value: unknown): JevMode {
+  return value === "cascade" || value === "shadow" ? value : "off";
+}
+
+function threshold(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+export function normalizeJevConfig(raw: unknown): JevConfig {
+  const record = toRecord(raw);
+  const allowThreshold = threshold(record.allowThreshold, DEFAULT_JEV_CONFIG.allowThreshold);
+  const denyThreshold = threshold(record.denyThreshold, DEFAULT_JEV_CONFIG.denyThreshold);
+  return {
+    mode: normalizeJevMode(record.mode),
+    baseUrl: typeof record.baseUrl === "string" && record.baseUrl.trim()
+      ? record.baseUrl.trim()
+      : DEFAULT_JEV_CONFIG.baseUrl,
+    apiKey: typeof record.apiKey === "string" ? record.apiKey.trim() : "",
+    model: typeof record.model === "string" && record.model.trim()
+      ? record.model.trim()
+      : DEFAULT_JEV_CONFIG.model,
+    timeoutSeconds: positiveNumber(record.timeoutSeconds, DEFAULT_JEV_CONFIG.timeoutSeconds),
+    allowThreshold,
+    denyThreshold: Math.min(denyThreshold, allowThreshold),
+  };
+}
+
 export function normalizeConfig(raw: unknown): AutoReviewConfig {
   const record = toRecord(raw);
   return {
@@ -74,6 +116,7 @@ export function normalizeConfig(raw: unknown): AutoReviewConfig {
     deny: stringArray(record.deny),
     environment: typeof record.environment === "string" ? record.environment : "",
     audit: record.audit !== false,
+    jev: normalizeJevConfig(record.jev),
   };
 }
 

@@ -9,5 +9,31 @@
   "allow": [],
   "deny": [],
   "environment": "",
-  "audit": true
+  "audit": true,
+
+  // Jev (TypeSafe System One) integration.
+  // mode:
+  //   "off"     - Jev disabled; behavior identical to the original extension.
+  //   "cascade" - Jev decides first: P(allow) >= allowThreshold is approved
+  //               directly, P(allow) <= denyThreshold is a high-confidence
+  //               deny (human fallback in fallback mode), and the uncertain
+  //               band escalates to the chat classifier. Jev failures fall
+  //               back to the chat classifier (never stricter than off).
+  //   "shadow"  - Jev runs in parallel and is only recorded in the audit log
+  //               next to every chat decision; ideal for accuracy testing.
+  // baseUrl: System One endpoint base. Default https://api.typesafe.ai.
+  //          Use https://openrouter.ai/api to bill through an OpenRouter key.
+  // apiKey:  Optional explicit key. When empty, TYPESAFE_API_KEY is read from
+  //          the environment (OPENROUTER_API_KEY when baseUrl is OpenRouter).
+  // model:   System One model id. A typesafe/ prefix is added automatically
+  //          on OpenRouter endpoints.
+  "jev": {
+    "mode": "off",
+    "baseUrl": "https://api.typesafe.ai",
+    "apiKey": "",
+    "model": "jev-latest",
+    "timeoutSeconds": 5,
+    "allowThreshold": 0.85,
+    "denyThreshold": 0.15
+  }
 }

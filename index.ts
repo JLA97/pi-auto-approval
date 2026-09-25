@@ -52,6 +52,11 @@ function classifierModelText(config: AutoReviewConfig): string {
   return config.classifierModel ?? "current";
 }
 
+function jevStatusText(config: AutoReviewConfig): string {
+  const jev = config.jev;
+  return `${jev.mode} (${jev.model} @ ${jev.baseUrl}, allow>=${jev.allowThreshold}, deny<=${jev.denyThreshold})`;
+}
+
 const COMMAND_ARGUMENTS = [
   { value: "status", label: "status", description: "Show current state and approval model" },
   { value: "off", label: "off", description: "Disable automatic approval" },
@@ -59,6 +64,10 @@ const COMMAND_ARGUMENTS = [
   { value: "auto", label: "auto", description: "AI review only; fail closed on failure or denial" },
   { value: "model", label: "model", description: "Select approval classifier model" },
   { value: "model current", label: "model current", description: "Use the active Pi session model for approval" },
+  { value: "jev", label: "jev", description: "Show Jev integration mode" },
+  { value: "jev off", label: "jev off", description: "Disable Jev; use the chat classifier only" },
+  { value: "jev cascade", label: "jev cascade", description: "Jev decides confident bands; uncertain calls escalate to the chat classifier" },
+  { value: "jev shadow", label: "jev shadow", description: "Jev runs in parallel and is only logged for accuracy analysis" },
 ];
 
 function getAutoReviewArgumentCompletions(argumentPrefix: string): Array<{ value: string; label: string; description: string }> | null {
@@ -134,6 +143,19 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
         notify(ctx, "Use /auto-approval model to select an approval classifier model.", "warning");
         break;
       }
+      case "jev": {
+        if (rest === "off" || rest === "cascade" || rest === "shadow") {
+          persist({ ...config, jev: { ...config.jev, mode: rest } }, ctx);
+          notify(ctx, `pi-auto-approval jev mode: ${rest}.`);
+          break;
+        }
+        if (!rest) {
+          notify(ctx, `jev: ${jevStatusText(config)}`);
+          break;
+        }
+        notify(ctx, "Use /auto-approval jev off | cascade | shadow.", "warning");
+        break;
+      }
       case "status":
       default:
         notify(
@@ -141,6 +163,7 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
           [
             `state: ${stateText(config)}`,
             `approval classifier model: ${classifierModelText(config)}`,
+            `jev: ${jevStatusText(config)}`,
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
           ].join("\n"),
@@ -150,7 +173,7 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
   }
 
   pi.registerCommand?.("auto-approval", {
-    description: "args: status | off | fallback | auto | model",
+    description: "args: status | off | fallback | auto | model | jev",
     getArgumentCompletions: getAutoReviewArgumentCompletions,
     handler: async (args, ctx) => {
       await runCommand(parseCommand(args), parseCommandRest(args), ctx);
